@@ -1,3 +1,0 @@
-Test code
-
-Co-Authored-By: Vince Geisler <vince@example.com>

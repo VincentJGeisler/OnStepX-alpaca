@@ -107,7 +107,7 @@ class ActionNotImplementedException:
 #
 # args:
 
-class DriverException:
+class DriverException(Exception):
     """
     **Exception Class for Driver Internal Errors**
         This exception is used for device errors and other internal exceptions.
@@ -273,6 +273,23 @@ class NotImplementedException:
     @property
     def Message(self) -> str:
         return self.message
+
+class PropertyNotImplementedException(DriverException):
+    """Property not implemented by this device.
+
+    Inherits from DriverException with specialized error number 0x400.
+    Used when a device property is not supported or unavailable.
+    """
+    def __init__(self, message: str = 'Property not implemented'):
+        """Initialize the ``PropertyNotImplementedException`` object
+
+        Args:
+            number (int):   0x400 (1024)
+            message (str):  'Property not implemented' (default)
+
+        * Logs ``PropertyNotImplementedException: {message}``
+        """
+        super().__init__(0x400, message)
 
 class OperationCancelledException:
     """An (asynchronous) in-progress operation has been cancelled"""

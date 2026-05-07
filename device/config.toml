@@ -1,21 +1,40 @@
-title = "Alpaca Sample Driver (Rotator)"
+title = "OnStepX Alpaca Driver (Multi-Device)"
 
 [network]
-ip_address = ''             # Any address
-port = 5555
+ip_address = ''
+telescope_port = 5555
+rotator_port = 5556
+focuser_port = 5557
 
 [server]
-location = 'Anywhere on Earth'  # Anything you want here
+location = 'Your Observatory'
 verbose_driver_exceptions = true
 
 [device]
-can_reverse = true
-step_size = 1.0
-steps_per_sec = 6
-sync_write_connected = true     # True to emulate sync Connected = true (for Conform)
+# Shared connection settings
+connection_type = 'tcp'
+serial_port = '/dev/ttyUSB0'
+tcp_host = '10.3.1.99'
+tcp_port = 9999
+baud_rate = 9600
+timeout = 2.0
+
+# Telescope specific
+aperture_diameter = 0.203
+aperture_area = 0.032
+focal_length = 1.2
+position_poll_interval = 0.25
+
+# Focuser specific
+focuser_number = 1
+enable_temp_comp = true
+temp_comp_coefficient = 5.0
+
+# Rotator specific
+enable_derotator = false
 
 [logging]
-log_level = 'INFO'
-log_to_stdout = false
+log_level = 'DEBUG'
+log_to_stdout = true
 max_size_mb = 5
 num_keep_logs = 10

@@ -81,7 +81,9 @@ class Config:
     # Network Section
     # ---------------
     ip_address: str = get_toml('network', 'ip_address')
-    port: int = get_toml('network', 'port')
+    telescope_port: int = get_toml('network', 'telescope_port')
+    rotator_port: int = get_toml('network', 'rotator_port')
+    focuser_port: int = get_toml('network', 'focuser_port')
     # --------------
     # Server Section
     # --------------
@@ -90,10 +92,23 @@ class Config:
     # --------------
     # Device Section
     # --------------
-    can_reverse: bool = get_toml('device', 'can_reverse')
-    step_size: float = get_toml('device', 'step_size')
-    steps_per_sec: int = get_toml('device', 'steps_per_sec')
-    sync_write_connected: bool = get_toml('device', 'sync_write_connected')
+    connection_type: str = get_toml('device', 'connection_type')
+    serial_port: str = get_toml('device', 'serial_port')
+    tcp_host: str = get_toml('device', 'tcp_host')
+    tcp_port: int = get_toml('device', 'tcp_port')
+    baud_rate: int = get_toml('device', 'baud_rate')
+    timeout: float = get_toml('device', 'timeout')
+    # Telescope specific
+    aperture_diameter: float = get_toml('device', 'aperture_diameter')
+    aperture_area: float = get_toml('device', 'aperture_area')
+    focal_length: float = get_toml('device', 'focal_length')
+    position_poll_interval: float = get_toml('device', 'position_poll_interval')
+    # Focuser specific
+    focuser_number: int = get_toml('device', 'focuser_number')
+    enable_temp_comp: bool = get_toml('device', 'enable_temp_comp')
+    temp_comp_coefficient: float = get_toml('device', 'temp_comp_coefficient')
+    # Rotator specific
+    enable_derotator: bool = get_toml('device', 'enable_derotator')
     # ---------------
     # Logging Section
     # ---------------

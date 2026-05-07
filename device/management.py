@@ -47,7 +47,7 @@ from shr import PropertyResponse, DeviceMetadata
 from config import Config
 from logging import Logger
 # For each *type* of device served
-from rotator import RotatorMetadata
+from telescope import TelescopeMetadata
 
 logger: Logger = None
 #logger = None                   # Safe on Python 3.7 but no intellisense in VSCode etc.
@@ -84,10 +84,10 @@ class configureddevices():
     def on_get(self, req: Request, resp: Response):
         confarray = [    # TODO ADD ONE FOR EACH DEVICE TYPE AND INSTANCE SERVED
             {
-            'DeviceName'    : RotatorMetadata.Name,
-            'DeviceType'    : RotatorMetadata.DeviceType,
+            'DeviceName'    : TelescopeMetadata.Name,
+            'DeviceType'    : TelescopeMetadata.DeviceType,
             'DeviceNumber'  : 0,
-            'UniqueID'      : RotatorMetadata.DeviceID
+            'UniqueID'      : TelescopeMetadata.DeviceID
             }
         ]
         resp.text = PropertyResponse(confarray, req).json

@@ -59,6 +59,7 @@
 import sys
 import traceback
 import inspect
+import threading
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 from enum import IntEnum
 
@@ -73,11 +74,14 @@ import log
 from config import Config
 from discovery import DiscoveryResponder
 from shr import set_shr_logger
+from onstepx_device import OnStepXDevice
 
 ##############################
 # FOR EACH ASCOM DEVICE TYPE #
 ##############################
+import telescope
 import rotator
+import focuser
 
 #--------------
 API_VERSION = 1
@@ -223,58 +227,98 @@ def main():
     # Share this logger throughout
     log.logger = logger
     exceptions.logger = logger
-    rotator.start_rot_device(logger)
     discovery.logger = logger
     set_shr_logger(logger)
-
-    #########################
-    # FOR EACH ASCOM DEVICE #
-    #########################
-    rotator.logger = logger
 
     # -----------------------------
     # Last-Chance Exception Handler
     # -----------------------------
     sys.excepthook = custom_excepthook
 
-    # ---------
-    # DISCOVERY
-    # ---------
-    _DSC = DiscoveryResponder(Config.ip_address, Config.port)
+    # ===============================================
+    # SHARED ONSTEPX CONNECTION (single instance)
+    # ===============================================
+    onstepx = OnStepXDevice(
+        logger=logger,
+        port=Config.serial_port,
+        baud=Config.baud_rate,
+        timeout=Config.timeout,
+        connection_type=Config.connection_type,
+        tcp_host=getattr(Config, 'tcp_host', None),
+        tcp_port=getattr(Config, 'tcp_port', None)
+    )
+    logger.info('OnStepX connection initialized')
 
-    # ----------------------------------
-    # MAIN HTTP/REST API ENGINE (FALCON)
-    # ----------------------------------
-    # falcon.App instances are callable WSGI apps
-    falc_app = App()
-    #
-    # Initialize routes for each endpoint the magic way
-    #
-    #########################
-    # FOR EACH ASCOM DEVICE #
-    #########################
-    init_routes(falc_app, 'rotator', rotator)
-    #
-    # Initialize routes for Alpaca support endpoints
-    falc_app.add_route('/management/apiversions', management.apiversions())
-    falc_app.add_route(f'/management/v{API_VERSION}/description', management.description())
-    falc_app.add_route(f'/management/v{API_VERSION}/configureddevices', management.configureddevices())
-    falc_app.add_route('/setup', setup.svrsetup())
-    falc_app.add_route(f'/setup/v{API_VERSION}/rotator/{{devnum}}/setup', setup.devsetup())
+    # ===============================================
+    # INITIALIZE DEVICES (all share one connection)
+    # ===============================================
+    telescope.start_tel_device(Config, logger, onstepx)
+    rotator.start_rot_device(Config, logger, onstepx)
+    focuser.start_foc_device(Config, logger, onstepx)
 
-    #
-    # Install the unhandled exception processor. See above,
-    #
-    falc_app.add_error_handler(Exception, falcon_uncaught_exception_handler)
+    # ===============================================
+    # CREATE FALCON APPS FOR EACH DEVICE
+    # ===============================================
+    telescope_app = App()
+    rotator_app = App()
+    focuser_app = App()
 
-    # ------------------
-    # SERVER APPLICATION
-    # ------------------
-    # Using the lightweight built-in Python wsgi.simple_server
-    with make_server(Config.ip_address, Config.port, falc_app, handler_class=LoggingWSGIRequestHandler) as httpd:
-        logger.info(f'==STARTUP== Serving on {Config.ip_address}:{Config.port}. Time stamps are UTC.')
-        # Serve until process is killed
-        httpd.serve_forever()
+    # Add exception handlers to each
+    telescope_app.add_error_handler(Exception, falcon_uncaught_exception_handler)
+    rotator_app.add_error_handler(Exception, falcon_uncaught_exception_handler)
+    focuser_app.add_error_handler(Exception, falcon_uncaught_exception_handler)
+
+    # ===============================================
+    # INITIALIZE ROUTES FOR EACH DEVICE
+    # ===============================================
+    init_routes(telescope_app, 'telescope', telescope)
+    init_routes(rotator_app, 'rotator', rotator)
+    init_routes(focuser_app, 'focuser', focuser)
+
+    # Add management/discovery routes for each device
+    telescope_app.add_route('/management/apiversions', management.apiversions())
+    telescope_app.add_route(f'/management/v{API_VERSION}/description', management.description())
+    telescope_app.add_route(f'/management/v{API_VERSION}/configureddevices', management.configureddevices())
+    telescope_app.add_route('/setup', setup.svrsetup())
+    telescope_app.add_route(f'/setup/v{API_VERSION}/telescope/{{devnum}}/setup', setup.devsetup())
+
+    rotator_app.add_route('/management/apiversions', management.apiversions())
+    rotator_app.add_route(f'/management/v{API_VERSION}/description', management.description())
+    rotator_app.add_route(f'/management/v{API_VERSION}/configureddevices', management.configureddevices())
+    rotator_app.add_route('/setup', setup.svrsetup())
+    rotator_app.add_route(f'/setup/v{API_VERSION}/rotator/{{devnum}}/setup', setup.devsetup())
+
+    focuser_app.add_route('/management/apiversions', management.apiversions())
+    focuser_app.add_route(f'/management/v{API_VERSION}/description', management.description())
+    focuser_app.add_route(f'/management/v{API_VERSION}/configureddevices', management.configureddevices())
+    focuser_app.add_route('/setup', setup.svrsetup())
+    focuser_app.add_route(f'/setup/v{API_VERSION}/focuser/{{devnum}}/setup', setup.devsetup())
+
+    # ===============================================
+    # CREATE AND START WSGI SERVERS
+    # ===============================================
+    telescope_server = make_server('', 5555, telescope_app, handler_class=LoggingWSGIRequestHandler)
+    rotator_server = make_server('', 5556, rotator_app, handler_class=LoggingWSGIRequestHandler)
+    focuser_server = make_server('', 5557, focuser_app, handler_class=LoggingWSGIRequestHandler)
+
+    logger.info('==STARTUP== OnStepX Alpaca Driver starting...')
+    logger.info('==STARTUP== Telescope on http://0.0.0.0:5555. Time stamps are UTC.')
+    logger.info('==STARTUP== Rotator on http://0.0.0.0:5556. Time stamps are UTC.')
+    logger.info('==STARTUP== Focuser on http://0.0.0.0:5557. Time stamps are UTC.')
+
+    # Start servers in separate threads
+    tel_thread = threading.Thread(target=telescope_server.serve_forever, daemon=False)
+    rot_thread = threading.Thread(target=rotator_server.serve_forever, daemon=False)
+    foc_thread = threading.Thread(target=focuser_server.serve_forever, daemon=False)
+
+    tel_thread.start()
+    rot_thread.start()
+    foc_thread.start()
+
+    # Wait for all servers to finish (they run until process is killed)
+    tel_thread.join()
+    rot_thread.join()
+    foc_thread.join()
 
 # ========================
 if __name__ == '__main__':

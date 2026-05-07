@@ -70,6 +70,7 @@ from shr import PropertyResponse, MethodResponse, PreProcessRequest, \
                 StateValue, get_request_field, to_bool
 from exceptions import *        # Nothing but exception classes
 from rotatordevice import RotatorDevice
+from onstepx_device import OnStepXDevice
 
 logger: Logger = None           # Really should use Pyton 3.10 or later
 #logger = None                  # Safe on Python 3.7 but no intellisense in VSCode etc.
@@ -89,29 +90,21 @@ maxdev = 0                      # Single instance
 # -------------------
 # Static metadata not subject to configuration changes
 class RotatorMetadata:
-    """ Metadata describing the Rotator Device. Edit for your device"""
-    Name = 'Sample Rotator'
-    Version = '0.6'
-    Description = 'Sample ASCOM Rotator'
+    """ Metadata describing the Rotator Device. """
+    Name = 'OnStepX Rotator'
+    Version = '1.0.0'
+    Description = 'ASCOM Alpaca Rotator for OnStepX Controller'
     DeviceType = 'Rotator'
-    DeviceID = '1892ED30-92F3-4236-843E-DA8EEEF2D1CC' # https://guidgenerator.com/online-guid-generator.aspx
-    Info = 'Alpaca Sample Device\nImplements IRotatorV4\nASCOM Initiative'
+    DeviceID = 'B8E3F4A2-7C9D-4E1B-A5F6-3D8C2E9F1B4A'
+    Info = 'OnStepX Alpaca Driver\nImplements IRotatorV4\nASCOM Initiative'
     MaxDeviceNumber = maxdev
     InterfaceVersion = 4        # IRotatorV4 (Platform 7)
 
-# --------------------
-# SIMULATED ROTATOR ()
-# --------------------
-rot_dev = None
-# At app init not import :-)
-def start_rot_device(logger: logger):
-    logger = logger
-    global rot_dev
-    rot_dev = RotatorDevice(logger)
-    rot_dev.can_reverse = Config.can_reverse
-    rot_dev.step_size = Config.step_size
-    rot_dev.steps_per_sec = Config.steps_per_sec
-    rot_dev.sync_write_connected = Config.sync_write_connected
+# -------------------------
+# REAL ONSTEPX ROTATOR
+# -------------------------
+device: RotatorDevice = None
+onstepx: OnStepXDevice = None
 
 # --------------------
 # RESOURCE CONTROLLERS
@@ -237,7 +230,7 @@ class connect:
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
         try:
-            rot_dev.Connect()
+            device.connect()
             resp.text = MethodResponse(req).json
         except Exception as ex:
             resp.text = MethodResponse(req,
@@ -256,7 +249,7 @@ class connected:
             per IRotatorV3 (PLatform 6).
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        resp.text = PropertyResponse(rot_dev.connected, req).json
+        resp.text = PropertyResponse(device.connected, req).json
 
     def on_put(self, req: Request, resp: Response, devnum: int):
         conn_str = get_request_field('Connected', req)
@@ -264,7 +257,7 @@ class connected:
 
         try:
             # ----------------------
-            rot_dev.connected = conn
+            device.connected = conn
             # ----------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -279,7 +272,7 @@ class connecting:
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
         try:
-            val = rot_dev.connecting
+            val = device.connecting
             resp.text = PropertyResponse(val, req).json
         except Exception as ex:
             resp.text = PropertyResponse(None, req,
@@ -292,15 +285,15 @@ class devicestate:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.DeviceState
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             val = []
-            val.append(StateValue('IsMoving', rot_dev.is_moving))
-            val.append(StateValue('MechanicalPosition', rot_dev.mechanical_position))
-            val.append(StateValue('Position', rot_dev.position))
+            val.append(StateValue('IsMoving', device.is_moving))
+            val.append(StateValue('MechanicalPosition', device.mechanical_position))
+            val.append(StateValue('Position', device.position))
             val.append(StateValue('TimeStamp', datetime.datetime.utcnow().isoformat()))
             resp.text = PropertyResponse(val, req).json
         except Exception as ex:
@@ -317,7 +310,7 @@ class disconnect:
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
         try:
-            rot_dev.Disconnect()
+            device.disconnect()
             resp.text = MethodResponse(req).json
         except Exception as ex:
             resp.text = MethodResponse(req,
@@ -330,13 +323,13 @@ class ismoving:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.IsMoving
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # ---------------------
-            moving = rot_dev.is_moving
+            moving = device.is_moving
             # ---------------------
             resp.text = PropertyResponse(moving, req).json
         except Exception as ex:
@@ -350,13 +343,13 @@ class mechanicalposition:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.MechanicalPosition
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # -------------------------------
-            pos = rot_dev.mechanical_position
+            pos = device.mechanical_position
             # -------------------------------
             resp.text = PropertyResponse(pos, req).json
         except Exception as ex:
@@ -370,13 +363,13 @@ class position:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.Position
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # -------------------------------
-            pos = rot_dev.position
+            pos = device.position
             # -------------------------------
             resp.text = PropertyResponse(pos, req).json
         except Exception as ex:
@@ -390,13 +383,13 @@ class reverse:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.Reverse
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # -------------------
-            rev = rot_dev.reverse
+            rev = device.reverse
             # -------------------
             resp.text = PropertyResponse(rev, req).json
         except Exception as ex:
@@ -404,7 +397,7 @@ class reverse:
                             DriverException(0x500, 'Rotator.Reverse failed', ex)).json
 
     def on_put(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
@@ -417,7 +410,7 @@ class reverse:
             return
         try:
             # ----------------------
-            rot_dev.reverse = rev
+            device.reverse = rev
             # ----------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -431,13 +424,13 @@ class stepsize:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.StepSize
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # ---------------------
-            steps = rot_dev.step_size
+            steps = device.step_size
             # ---------------------
             resp.text = PropertyResponse(steps, req).json
         except Exception as ex:
@@ -451,13 +444,13 @@ class targetposition:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.TargetPosition
     """
     def on_get(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = PropertyResponse(None, req,
                             NotConnectedException()).json
             return
         try:
             # ---------------------------
-            pos = rot_dev.target_position
+            pos = device.target_position
             # ---------------------------
             resp.text = PropertyResponse(pos, req).json
         except Exception as ex:
@@ -471,13 +464,13 @@ class halt:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.Halt
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
         try:
             # ------------
-            rot_dev.Halt()
+            device.halt()
             # ------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -492,7 +485,7 @@ class move:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.Move
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
@@ -513,7 +506,7 @@ class move:
             logger.debug('Result would be < 0, setting to {newpos}')
         try:
             # ------------------
-            rot_dev.Move(newpos)    # async
+            device.move(newpos)    # async
             # ------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -527,7 +520,7 @@ class moveabsolute:
         See https://ascom-standards.org/newdocs/rotator.html#Rotator.MoveAbsolute
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
@@ -544,7 +537,7 @@ class moveabsolute:
             return
         try:
             # --------------------------
-            rot_dev.MoveAbsolute(newpos)    # async
+            device.move_absolute(newpos)    # async
             # --------------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -559,7 +552,7 @@ class movemechanical:
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
         formdata = req.get_media()
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
@@ -576,7 +569,7 @@ class movemechanical:
             return
         try:
             # ----------------------------
-            rot_dev.MoveMechanical(newpos)    # async
+            device.move_mechanical(newpos)    # async
             # ----------------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
@@ -591,7 +584,7 @@ class sync:
     """
     def on_put(self, req: Request, resp: Response, devnum: int):
         formdata = req.get_media()
-        if not rot_dev.connected:
+        if not device.connected:
             resp.text = MethodResponse(req,
                             NotConnectedException()).json
             return
@@ -608,9 +601,40 @@ class sync:
             return
         try:
             # ------------------
-            rot_dev.Sync(newpos)
+            device.sync(newpos)
             # ------------------
             resp.text = MethodResponse(req).json
         except Exception as ex:
             resp.text = MethodResponse(req,
                             DriverException(0x500, 'Rotator.Sync failed', ex)).json
+
+
+def start_rot_device(config, _logger, shared_onstepx=None):
+    """Initialize rotator device with shared OnStepX connection.
+
+    Args:
+        config: Configuration object
+        _logger: Logger instance
+        shared_onstepx: Shared OnStepXDevice instance (created by app.py)
+    """
+    global logger, device, onstepx
+    logger = _logger
+
+    # Use shared OnStepX connection if provided
+    if shared_onstepx is not None:
+        onstepx = shared_onstepx
+    else:
+        # Create new instance (backward compatibility)
+        onstepx = OnStepXDevice(
+            logger=logger,
+            port=config.serial_port,
+            baud=config.baud_rate,
+            timeout=config.timeout,
+            connection_type=config.connection_type,
+            tcp_host=getattr(config, 'tcp_host', None),
+            tcp_port=getattr(config, 'tcp_port', None)
+        )
+
+    # Initialize rotator device
+    device = RotatorDevice(logger, onstepx)
+    logger.info('OnStepX Rotator device initialized')
