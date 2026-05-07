@@ -164,7 +164,7 @@ class DriverException(Exception):
         return self.fullmsg
 
 
-class InvalidOperationException:
+class InvalidOperationException(Exception):
     """The client asked for something that can't be done"""
     def __init__(
             self,
@@ -192,7 +192,7 @@ class InvalidOperationException:
         return self.message
 
 
-class InvalidValueException:
+class InvalidValueException(Exception):
     """A value given is invalid or out of range"""
     def __init__(
             self,

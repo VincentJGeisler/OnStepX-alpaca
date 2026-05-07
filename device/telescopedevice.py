@@ -75,6 +75,9 @@ class TelescopeDevice:
         self._target_ra = 0.0  # hours
         self._target_dec = 0.0  # degrees
 
+        # Safety limits (hardcoded for life-safety critical application)
+        self._declination_maximum = 55.0  # degrees (prevents camera collision at zenith) - CRITICAL
+
         # Pulse guiding state
         self._pulse_guide_start = 0.0
         self._pulse_guide_duration = 0.0
@@ -576,18 +579,40 @@ class TelescopeDevice:
 
     @property
     def can_move_axis(self) -> bool:
-        return False
+        return True
 
     # ==================== ASCOM Methods ====================
 
+    def _check_slew_safe(self, ra: float, dec: float) -> None:
+        """Check if slew to target is safe.
+
+        Args:
+            ra: Right ascension in hours
+            dec: Declination in degrees
+
+        Raises:
+            InvalidValueException: If target violates safety limits
+        """
+        # Check declination limit (camera collision at zenith) - CRITICAL
+        if dec > self._declination_maximum:
+            raise InvalidValueException(
+                f'Target Dec {dec:.1f}° exceeds maximum safe declination {self._declination_maximum}° '
+                f'(CAMERA COLLISION RISK)'
+            )
+
+        # OnStepX enforces its own horizon limits and will return error code 1 if below horizon
+        self.logger.debug(f'Slew safety check passed: RA {ra:.2f}h Dec {dec:.1f}°')
+
     def slew_to_coordinates(self, ra: float, dec: float):
         """Slew to RA/Dec (blocking)."""
+        self._check_slew_safe(ra, dec)
         self.target_right_ascension = ra
         self.target_declination = dec
         self.slew_to_target()
 
     def slew_to_coordinates_async(self, ra: float, dec: float):
         """Slew to RA/Dec (non-blocking)."""
+        self._check_slew_safe(ra, dec)
         self.target_right_ascension = ra
         self.target_declination = dec
         self.slew_to_target_async()
@@ -686,7 +711,13 @@ class TelescopeDevice:
         self.sync_to_target()
 
     def sync_to_target(self):
-        """Sync to current target."""
+        """Sync to current target.
+
+        Sends :Sr# and :Sd# to set target on hardware, then :CM# to sync.
+        """
+        ra, dec = self.target_right_ascension, self.target_declination
+        if not self._onstepx.set_target_radec(ra, dec):
+            raise DriverException(0x500, 'Failed to set target coordinates for sync')
         error_code = self._onstepx.sync_to_target()
         if error_code != 0:
             raise DriverException(0x500, f'Sync failed with code {error_code}')
@@ -713,5 +744,33 @@ class TelescopeDevice:
             raise InvalidValueException(f'Invalid guide direction {direction}')
 
     def move_axis(self, axis: int, rate: float):
-        """Move axis at rate - not implemented."""
-        raise NotImplementedException('MoveAxis not supported')
+        """Move axis at specified rate.
+
+        Args:
+            axis: 0 (primary/RA), 1 (secondary/Dec), 2 (tertiary)
+            rate: Rate in degrees/second (0 to stop, positive/negative for direction)
+
+        Raises:
+            NotConnectedException: If not connected
+            InvalidValueException: If axis invalid or rate out of range
+        """
+        if not self.connected:
+            raise NotConnectedException()
+
+        if axis not in [0, 1]:
+            raise InvalidValueException(f'Axis {axis} not supported (only 0=RA, 1=Dec)')
+
+        # Map rate to OnStepX guide rate and direction
+        abs_rate = abs(rate)
+        direction = 1 if rate > 0 else 0
+
+        if abs_rate == 0:
+            # Stop axis
+            self._onstepx.stop_axis(axis)
+            self.logger.debug(f'Stopped axis {axis}')
+        else:
+            # Start moving at current guide rate
+            # Note: Rate parameter is ignored - OnStepX uses configured guide rate
+            # Use set_guide_rate() separately if different rate needed
+            self._onstepx.move_axis(axis, direction)
+            self.logger.info(f'Moving axis {axis} direction {direction}')

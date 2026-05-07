@@ -233,6 +233,84 @@ class OnStepXDevice:
                 raise RuntimeError('Not connected to OnStepX')
             return self._send_command_unsafe(cmd)
 
+    def send_command_no_response(self, cmd: str) -> None:
+        """Send a command that expects no response (thread-safe).
+
+        Used for action commands like :Q# (halt) that close the connection
+        immediately without returning data. Does not wait for response.
+
+        Args:
+            cmd: Command string (e.g., 'Q' or ':Q')
+
+        Raises:
+            RuntimeError: If not connected or send fails
+        """
+        with self._lock:
+            if not self._connected:
+                raise RuntimeError('Not connected to OnStepX')
+            self._send_command_no_response_unsafe(cmd)
+
+    def _send_command_no_response_unsafe(self, cmd: str) -> None:
+        """Send command with no response without locking (assumes caller holds lock).
+
+        Args:
+            cmd: Command string
+        """
+        # Normalize command format
+        if not cmd.startswith(':'):
+            cmd = ':' + cmd
+        if not cmd.endswith('#'):
+            cmd = cmd + '#'
+
+        self.logger.debug(f'-> {cmd} (no response expected)')
+
+        try:
+            if self.connection_type == ConnectionType.SERIAL:
+                self._ser.write(cmd.encode('utf-8'))
+                self._ser.flush()
+            else:
+                # Reconnect if connection was closed by previous no-response command
+                if self._conn is None:
+                    self.logger.debug('Reconnecting after no-response command')
+                    self._reconnect()
+
+                # TCP - send and wait for OnStepX to close connection
+                try:
+                    self._conn.sendall(cmd.encode('utf-8'))
+
+                    # Wait for OnStepX to process command and close connection
+                    # OnStepX closes connection after processing no-response commands
+                    self._conn.settimeout(2.0)
+                    try:
+                        # Try to read - should get empty (connection closed by peer)
+                        data = self._conn.recv(1024)
+                        if not data:
+                            # Connection closed by peer - command processed
+                            pass
+                    except socket.timeout:
+                        # OnStepX didn't close - close our side
+                        self.logger.warning(f'OnStepX did not close connection after {cmd}')
+                    except (ConnectionResetError, OSError):
+                        # Connection closed by peer - expected
+                        pass
+
+                except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                    # Connection closed during send - command may not have been processed
+                    self.logger.warning(f'Connection error sending {cmd}: {e}')
+
+                # Clean up connection
+                try:
+                    self._conn.close()
+                except:
+                    pass
+                self._conn = None
+
+            self.logger.debug('<- (no response, connection closed by peer)')
+
+        except Exception as e:
+            self.logger.error(f'Failed to send no-response command {cmd}: {e}')
+            raise RuntimeError(f'Command {cmd} failed: {e}')
+
     def _send_command_unsafe(self, cmd: str) -> str:
         """Send command without locking (assumes caller holds lock).
 
@@ -252,6 +330,11 @@ class OnStepXDevice:
 
         for attempt in range(1 + self._max_retries):
             try:
+                # Reconnect if connection was closed by previous no-response command
+                if self.connection_type == ConnectionType.TCP and self._conn is None:
+                    self.logger.debug('Reconnecting after no-response command')
+                    self._reconnect()
+
                 if self.connection_type == ConnectionType.SERIAL:
                     response = self._serial_read_response(cmd)
                 else:
@@ -510,9 +593,66 @@ class OnStepXDevice:
         """Stop all telescope motion.
 
         Halts slewing, guiding, and any other movement.
+        OnStepX :Q# command returns nothing and closes connection.
         """
-        self.send_command(':Q#')
+        self.send_command_no_response(':Q#')
         self.logger.info('Slew stopped')
+
+    # ====================================================================
+    # AXIS MOVEMENT COMMANDS
+    # ====================================================================
+
+    def set_guide_rate(self, rate_code: str) -> None:
+        """Set guide/movement rate.
+
+        Args:
+            rate_code: 'G' (guide 1x), 'C' (center 8x), 'M' (find 20x),
+                      'S' (slew max), or '0'-'9' for custom
+
+        OnStepX command returns nothing.
+        """
+        cmd = f':R{rate_code}#'
+        self.send_command_no_response(cmd)
+        self.logger.debug(f'Guide rate set to {rate_code}')
+
+    def move_axis(self, axis: int, direction: int) -> None:
+        """Start moving axis at current guide rate.
+
+        Args:
+            axis: 0 (RA/Azimuth), 1 (Dec/Altitude)
+            direction: 0 (negative/west/south), 1 (positive/east/north)
+
+        OnStepX command returns nothing.
+        """
+        if axis == 0:
+            # RA/Azimuth axis
+            cmd = ':Me#' if direction == 1 else ':Mw#'
+        elif axis == 1:
+            # Dec/Altitude axis
+            cmd = ':Mn#' if direction == 1 else ':Ms#'
+        else:
+            raise ValueError(f'Invalid axis: {axis}')
+
+        self.send_command_no_response(cmd)
+        self.logger.debug(f'Moving axis {axis} direction {direction}')
+
+    def stop_axis(self, axis: int) -> None:
+        """Stop axis movement.
+
+        Args:
+            axis: 0 (RA/Azimuth), 1 (Dec/Altitude)
+
+        OnStepX command returns nothing.
+        """
+        if axis == 0:
+            cmd = ':Qe#'  # Stop east/west
+        elif axis == 1:
+            cmd = ':Qn#'  # Stop north/south
+        else:
+            raise ValueError(f'Invalid axis: {axis}')
+
+        self.send_command_no_response(cmd)
+        self.logger.debug(f'Stopped axis {axis}')
 
     # ====================================================================
     # TARGET SETTING AND GOTO COMMANDS
@@ -649,15 +789,21 @@ class OnStepXDevice:
             enabled: True to enable tracking, False to disable
 
         Returns:
-            bool: True if command succeeded
+            bool: True if command succeeded, False otherwise
+
+        Note:
+            :Te# enables tracking, :Td# disables tracking.
+            These return '1' on success, '0' on failure.
+            :T+# and :T-# are DIFFERENT commands that adjust the
+            sidereal clock rate by 0.02 Hz - they do NOT enable/disable.
         """
-        cmd = ':T+#' if enabled else ':T-#'
+        cmd = ':Te#' if enabled else ':Td#'
         response = self.send_command(cmd)
         success = response == '1'
-
         if success:
             self.logger.info(f'Tracking {"enabled" if enabled else "disabled"}')
-
+        else:
+            self.logger.warning(f'Tracking {"enable" if enabled else "disable"} failed: {response!r}')
         return success
 
     def get_tracking_rate(self) -> float:
@@ -679,7 +825,12 @@ class OnStepXDevice:
             mode: 'sidereal', 'lunar', 'solar', or 'king'
 
         Returns:
-            bool: True if command succeeded
+            bool: True (these commands have no response, success assumed)
+
+        Note:
+            :TQ# (sidereal), :TS# (solar), :TK# (king), :TL# (lunar)
+            are no-response commands in OnStepX. They set the tracking
+            rate but do NOT send a reply.
         """
         mode_lower = mode.lower()
         if mode_lower == 'sidereal':
@@ -693,8 +844,9 @@ class OnStepXDevice:
         else:
             raise ValueError(f'Unknown tracking mode: {mode}')
 
-        response = self.send_command(cmd)
-        return response == '1'
+        self.send_command_no_response(cmd)
+        self.logger.info(f'Tracking mode set to {mode_lower}')
+        return True
 
     # ====================================================================
     # PARK AND HOME COMMANDS
@@ -728,13 +880,11 @@ class OnStepXDevice:
         """Move telescope to home position.
 
         Returns:
-            bool: True if command accepted
+            bool: True (command has no response, success assumed)
         """
-        response = self.send_command(':hC#')
-        success = response == '1'
-        if success:
-            self.logger.info('Home command sent')
-        return success
+        self.send_command_no_response(':hC#')
+        self.logger.info('Home command sent')
+        return True
 
     def set_home(self) -> bool:
         """Set current position as home.
@@ -890,18 +1040,15 @@ class OnStepXDevice:
         if not (0 < duration_ms <= 32767):
             raise ValueError(f'Pulse duration out of range: {duration_ms}')
 
-        # Map directions to axes
-        if direction in ['N', 'S']:
-            # Dec axis
-            cmd_char = 'd'
-        else:
-            # RA axis
-            cmd_char = 'r'
-
-        cmd = f':Mg{cmd_char}{duration_ms}#'
+        # OnStepX expects lowercase cardinal direction: n, s, e, w
+        # Use uppercase MG for response (0/1), lowercase Mg returns nothing
+        cmd = f':MG{direction.lower()}{duration_ms}#'
         response = self.send_command(cmd)
 
-        return response == '' or response == '1'
+        if response == '0':
+            self.logger.warning(f'Pulse guide failed: {direction} {duration_ms}ms')
+            return False
+        return True
 
     # ====================================================================
     # SYNC COMMANDS
